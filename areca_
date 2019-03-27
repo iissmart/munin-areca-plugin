@@ -1,0 +1,195 @@
+#!/usr/bin/perl -w
+# -*- perl -*-
+=head1 NAME
+
+areca_ - Wildcard-plugin to monitor information from temperature and
+voltage sensors from areca cards.
+
+=head1 CONFIGURATION
+
+The possible wildcard values are the follwing: temp, volt. So you
+would create symlinks to this plugin called areca_temp and areca_volt.
+
+The plugins needs the following components configured:
+
+=over
+
+=item arcmsr modules installed and loaded.
+
+=item areca cli64 program installed and in path.
+
+=back
+
+Note: Sensor names are read from the output of the cli64 program.
+
+  [areca_*]
+      env.cli64             - Override default cli64 program path
+      env.ignore_temp<n>    - Temperature <n> will not be plotted
+      env.ignore_volt<n>    - Voltage <n> will not be plotted
+      env.volt_warn_percent - Percentage over mininum/under maximum for warning
+
+=head1 AUTHOR
+
+Ken Link
+
+=head1 LICENSE
+
+GPLv2
+
+=head1 MAGIC MARKERS
+
+ #%# family=manual
+ #%# capabilities=autoconf suggest
+
+=cut
+
+use strict;
+
+$ENV{'LANG'} = "C"; # Force parsable output from cli64.
+$ENV{'LC_ALL'} = "C"; # Force parsable output from cli64.
+my $CLI64 = $ENV{'cli64'} || 'cli64 hw info';
+
+# Example outputs from cli64 & matching regex parts:
+#The Hardware Monitor Information
+#===========================================
+#Fan#1 Speed (RPM)   : N.A.
+#Battery Status      : Not Installed
+#CPU Temperature     : 61 (Celsius)
+#Ctrl Temperature    : 54 (Celsius)
+#Power +12V          : 11.916
+#Power +5V           : 5.053
+#Power +3.3V         : 3.280
+#SATA PHY +2.5V      : 2.528
+#DDR-II +1.8V        : 1.840
+#PCI-E +1.8V         : 1.856
+#CPU +1.8V           : 1.856
+#CPU +1.2V           : 1.216
+#DDR-II +0.9V        : 0.912
+#HDD #1  Temp.       : 43
+#HDD #2  Temp.       : 40
+#HDD #3  Temp.       : 39
+#HDD #4  Temp.       : 39
+#HDD #5  Temp.       : 33
+#HDD #6  Temp.       : 33
+#HDD #7  Temp.       : 33
+#HDD #8  Temp.       : 31
+#HDD #9  Temp.       : 0
+#HDD #10 Temp.       : 0
+#HDD #11 Temp.       : 0
+#HDD #12 Temp.       : 0
+#HDD #13 Temp.       : 0
+#HDD #14 Temp.       : 0
+#HDD #15 Temp.       : 0
+#HDD #16 Temp.       : 0
+#HDD #17 Temp.       : 0
+#HDD #18 Temp.       : 0
+#HDD #19 Temp.       : 0
+#HDD #20 Temp.       : 0
+#HDD #21 Temp.       : 0
+#HDD #22 Temp.       : 0
+#HDD #23 Temp.       : 0
+#HDD #24 Temp.       : 0
+#===========================================
+#GuiErrMsg<0x00>: Success.
+
+my %config = (
+    temp => {
+	regex => qr/^(.*Temp[a-z]*)[. ]+:\ ([0-9]+).*$/xm,
+    title => 'Areca Temperatures',
+    vlabel => 'degrees Celsius',
+#    print_threshold => \&temp_threshold,
+    graph_args => '--base 1000 -l 0'
+    },
+
+    volt => {
+	regex => qr/^(.*\+[0-9.]+V)\ +:\ ([0-9.]+)$/xm,
+    title => 'Areca Voltages',
+    vlabel => 'Volt',
+#    print_threshold => \&volt_threshold,
+    graph_args => '--base 1000 --logarithmic'
+    },
+);
+
+if ( defined $ARGV[0] and $ARGV[0] eq 'autoconf' ) {
+  # Now see if "cli64" can run
+  my $text = `$CLI64 2>/dev/null`;
+  if ($?) {
+    if ($? == -1) {
+      print "no (program $CLI64 not found)\n";
+    } else {
+      print "no (program $CLI64 died)\n";
+    }
+    exit 0;
+  }
+
+  print "yes\n";
+  exit 0;
+}
+
+if (defined $ARGV[0] and $ARGV[0] eq 'suggest') {
+  my $text = `$CLI64 2>/dev/null`;
+  foreach my $func (keys %config) {
+    print $func, "\n" if $text =~ $config{$func}->{regex};
+  }
+  exit;
+}
+
+$0 =~ /areca_(.+)*$/;
+my $func = $1;
+exit 2 unless defined $func;
+
+if ( defined $ARGV[0] and $ARGV[0] eq 'config' ) {
+  print "graph_title $config{$func}->{title}\n";
+  print "graph_vlabel $config{$func}->{vlabel}\n";
+  print "graph_args $config{$func}->{graph_args}\n";
+  print "graph_category sensors\n";
+  my $text = `$CLI64`;
+  my $sensor = 1;
+  while ($text =~ /$config{$func}->{regex}/g) {
+    my ($label, undef) = ($1, $2);
+    print "$func$sensor.label $label\n";
+#    print "$label.label $label\n";
+#    $config{$func}->{print_threshold}->($func.$sensor, $3, $4);
+    print "$func$sensor.graph no\n" if exists $ENV{"ignore_$func$sensor"};
+#    print "$label.graph no\n" if exists $ENV{"ignore_$label"};
+    $sensor++;
+  }
+  exit 0;
+}
+
+my $text = `$CLI64`;
+my $sensor = 1;
+while ($text =~ /$config{$func}->{regex}/g) {
+  print "$func$sensor.value $2\n";
+#  print "$1.value $2\n";
+  $sensor++;
+}
+
+sub temp_threshold {
+  my $name = shift;
+  my $max = shift;
+  my $min = shift;
+
+  if (defined($min) and defined($max) and $min > $max) {
+      ($min, $max) = ($max, $min);
+  }
+
+  printf "$name.warning $min\n" if $min;
+  printf "$name.critical $max\n" if $max;
+}
+
+sub volt_threshold {
+  my $name = shift;
+  my $min = shift;
+  my $max = shift;
+  my $warn_percent = exists $ENV{volt_warn_percent} ? $ENV{volt_warn_percent} : 20;
+
+  return unless defined ($min && $max);
+
+  my $diff = $max - $min;
+  my $dist = $diff * $warn_percent / 100;
+  printf "$name.warning %.2f:%.2f\n", $min + $dist, $max - $dist;
+  printf "$name.critical $min:$max\n";
+}
+
+# vim:syntax=perl
